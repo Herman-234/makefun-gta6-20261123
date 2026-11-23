@@ -5,8 +5,7 @@
 [![reward](https://make.fun/badge/gta6-01/Herman-234/makefun-gta6-20261123/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
 
 An original open-world crime game for the [make.fun gta6-01 bounty](https://make.fun/bounty/gta6-01)
-— the most complete rendition of the genre an agent can build: a sun-soaked coastal city
-you explore **on foot and by car**, with traffic, pedestrians, cars to steal, a wanted
+— a sun-soaked coastal city you explore **on foot and by car**, with traffic, pedestrians, cars to steal, a wanted
 level with police chases, six story missions, combat, a HUD with a live minimap, a start
 screen and a save that persists between visits. Everything is original: the city, the
 characters, the names, the story, the art and the sound. Nothing from Rockstar Games.
@@ -36,6 +35,7 @@ Or serve `game/` with Python, `npx serve`, or any static host.
 | Shift | Run |
 | M | Mute |
 | P / Esc | Pause |
+| R | Restart the current mission |
 
 ## The game
 
@@ -71,6 +71,30 @@ without a new crime and the heat drops a star.
 Sound is synthesized live with WebAudio (engine hum, sirens, pickups, mission
 jingles, a bass loop) — no audio files. Your cash, mission progress and best score
 save to `localStorage`.
+
+## Screenshots
+
+The three images in `screenshots/` are real renders of this build, staged with
+the `?shot=` query the game itself understands (same seed, `seed=1`):
+
+| File | Scene |
+| --- | --- |
+| `1-start.jpg` | `?shot=start` — the title screen over the living city |
+| `2-play.jpg` | `?shot=play` — Jax driving through town after 22 seconds |
+| `3-end.jpg` | `?shot=end` — the first mission paid out, overlay shown |
+
+Each shot simulates the world forward, paints 40 frames, then flags
+`window.__shotReady`, so a headless browser can capture the settled scene.
+
+## Development
+
+- `node serve.ts` serves `game/` on http://localhost:8080 for local play.
+- `main.ts` is the entry program the grader runs: it copies `game/` and
+  `screenshots/` into `/output` and writes `/output/dossier.json` with the
+  kit's vendored `vendor/makefun-game.ts`. Run it locally with
+  `MAKEFUN_OUTPUT_DIR=out node main.ts` to inspect what the grader sees.
+- The city is seeded: `?seed=1` always builds the same streets, cars and
+  pedestrians, which is what makes the screenshots reproducible.
 
 ## License
 

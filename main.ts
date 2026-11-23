@@ -33,6 +33,13 @@ if (existsSync(shotsDir)) copyTree(shotsDir, join(outDir, 'screenshots'));
 // bytes; the rest refuse an entry the scorer would refuse (more than 4
 // screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB
 // of game files in all, or a path under game/ over 1000 bytes).
+// Refuse to hand in a snapshot with no screenshots, or more than the
+// scorer allows — both are caught here, while the fix is still cheap,
+// instead of at grading time.
+const shotFiles = existsSync(shotsDir) ? readdirSync(shotsDir) : [];
+if (shotFiles.length === 0) throw new Error('no screenshots in screenshots/ — take the three ?shot= scenes first');
+if (shotFiles.length > 4) throw new Error(`too many screenshots (${shotFiles.length}) — the scorer takes at most 4`);
+
 writeFileSync(
   join(outDir, 'dossier.json'),
   buildDossier(outDir, {
@@ -43,4 +50,4 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
-console.log(`VICE SHORES handed in to ${outDir}`);
+console.log(`VICE SHORES handed in to ${outDir} (${shotFiles.length} screenshots, dossier.json written)`);

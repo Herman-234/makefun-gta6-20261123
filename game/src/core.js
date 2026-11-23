@@ -1,16 +1,20 @@
-// Shared tuning, seeded random, keyboard/mouse input and synthesized WebAudio sound.
-// No assets: every sound is generated with oscillators and noise at run time.
+// VICE SHORES — shared tuning, deterministic random, keyboard/mouse input,
+// and synthesized WebAudio sound. No audio files: every sound is built live
+// from oscillators. This module owns no game rules, only the numbers and the
+// plumbing the simulation (world.js) and the presentation (render.js) share.
 import * as THREE from 'three';
 
 export const STEP = 1 / 60;
 
+// The city is a grid: roads every 58 m, seven centrelines per axis, blocks of
+// 44 m between them. South of z = 196 the roads give way to sand, then sea.
 export const CITY = {
-  pitch: 58,          // road centreline spacing
-  roads: 7,           // road centrelines per axis (-3..3)
-  roadHalf: 7,        // half width of the road surface
-  block: 44,          // block size between roads
-  bound: 210,         // playable half-extent (city + beach strip)
-  beachZ: 196,        // sand starts here (south edge)
+  pitch: 58,
+  roads: 7,
+  roadHalf: 7,
+  block: 44,
+  bound: 210,
+  beachZ: 196,
   oceanZ: 250,
 };
 
@@ -38,8 +42,10 @@ export const POLICE_MAX = 4;
 
 export const WANTED_DECAY_SECONDS = 18;
 export const BUST_LOSS = 0.15;
-export const WASTED_LOSS = 0.10;
+export const WASTED_LOSS = 0.1;
 
+// Rico's six jobs, in story order. `target` is an [x, z] map point;
+// `time` is the limit in seconds for timed jobs.
 export const MISSIONS = [
   { title: '1 · Meet Rico at the Pier', text: 'Rico is waiting at the pier, south beach. Get there any way you can.', kind: 'goto', target: [150, 218], reward: 100 },
   { title: '2 · Borrow a Ride', text: 'A job needs wheels. Walk up to any parked car and press E to take it. The owner will not mind. Probably.', kind: 'steal', target: null, reward: 50 },
@@ -65,17 +71,43 @@ export const PALETTE = {
   pedShirt: [0xe85d5d, 0x4f8de8, 0x58c96b, 0xe8c33d, 0xb678e8, 0xe8e8e8, 0x2fae9e],
 };
 
+// ------------------------------------------------------------- helpers ----
+// Small pure helpers the simulation and the HUD share, so the same math is
+// never written twice in two files.
+export function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// Shortest signed turn from angle `a` to angle `b`, in (-PI, PI].
+export function angleDiff(a, b) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d <= -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+export function dist2d(ax, az, bx, bz) { return Math.hypot(ax - bx, az - bz); }
+
+// "$1,250" with a thousands separator, for the cash readout.
+export function formatCash(n) { return '$' + Math.round(n).toLocaleString('en-US'); }
+
+// The in-game clock starts at sunset: 18:20, and runs 1 game-minute per
+// real second while the city is live.
+export const START_CLOCK_MINUTES = 18 * 60 + 20;
+
+// Deterministic xorshift32 generator: the same seed always deals the same city,
+// so a screenshot seed reproduces its scene exactly.
 export function createRandom(seed) {
-  let a = seed | 0;
+  let s = (seed >>> 0) || 1;
   return function random() {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    s ^= (s << 13) >>> 0; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= (s << 5) >>> 0; s >>>= 0;
+    return s / 4294967296;
   };
 }
 
 // ---------------------------------------------------------------- input ----
+// One-shot actions are delivered as a bitmask the loop drains once per step;
+// held keys are read live through forward()/strafe()/run().
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
 export const ACTION_ENTER = 4;
@@ -85,122 +117,124 @@ export const ACTION_JUMP = 32;
 export const ACTION_MUTE = 64;
 
 export function createInput(canvas) {
-  const keys = new Set();
-  let actions = 0;
-  let lookDX = 0, lookDY = 0;
-  let dragging = false;
-  let lastX = 0, lastY = 0;
+  const down = new Set();
+  let queued = 0;
+  let dragDX = 0, dragDY = 0;
+  let dragging = false, px = 0, py = 0;
 
-  const CONFIRM = new Set(['Space', 'Enter']);
-  window.addEventListener('keydown', (event) => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(event.code)) event.preventDefault();
-    if (event.repeat) { keys.add(event.code); return; }
-    keys.add(event.code);
-    if (CONFIRM.has(event.code)) actions |= ACTION_CONFIRM;
-    if (event.code === 'KeyP' || event.code === 'Escape') actions |= ACTION_PAUSE;
-    if (event.code === 'KeyE') actions |= ACTION_ENTER;
-    if (event.code === 'KeyF') actions |= ACTION_PUNCH;
-    if (event.code === 'KeyH') actions |= ACTION_HORN;
-    if (event.code === 'KeyM') actions |= ACTION_MUTE;
-    if (event.code === 'Space') actions |= ACTION_JUMP;
-  });
-  window.addEventListener('keyup', (event) => keys.delete(event.code));
-  window.addEventListener('blur', () => keys.clear());
+  const CONFIRM_KEYS = ['Space', 'Enter'];
+  const PREVENT = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'];
 
-  canvas.addEventListener('pointerdown', (event) => {
-    dragging = true; lastX = event.clientX; lastY = event.clientY;
-    canvas.setPointerCapture(event.pointerId);
+  window.addEventListener('keydown', (ev) => {
+    if (PREVENT.includes(ev.code)) ev.preventDefault();
+    if (ev.repeat) { down.add(ev.code); return; }
+    down.add(ev.code);
+    if (CONFIRM_KEYS.includes(ev.code)) queued |= ACTION_CONFIRM;
+    if (ev.code === 'KeyP' || ev.code === 'Escape') queued |= ACTION_PAUSE;
+    if (ev.code === 'KeyE') queued |= ACTION_ENTER;
+    if (ev.code === 'KeyF') queued |= ACTION_PUNCH;
+    if (ev.code === 'KeyH') queued |= ACTION_HORN;
+    if (ev.code === 'KeyM') queued |= ACTION_MUTE;
+    if (ev.code === 'Space') queued |= ACTION_JUMP;
   });
-  canvas.addEventListener('pointermove', (event) => {
+  window.addEventListener('keyup', (ev) => down.delete(ev.code));
+  window.addEventListener('blur', () => down.clear());
+
+  canvas.addEventListener('pointerdown', (ev) => {
+    dragging = true; px = ev.clientX; py = ev.clientY;
+    canvas.setPointerCapture(ev.pointerId);
+  });
+  canvas.addEventListener('pointermove', (ev) => {
     if (!dragging) return;
-    lookDX += event.clientX - lastX;
-    lookDY += event.clientY - lastY;
-    lastX = event.clientX; lastY = event.clientY;
+    dragDX += ev.clientX - px; dragDY += ev.clientY - py;
+    px = ev.clientX; py = ev.clientY;
   });
-  const endDrag = () => { dragging = false; };
-  canvas.addEventListener('pointerup', endDrag);
-  canvas.addEventListener('pointercancel', endDrag);
+  const release = () => { dragging = false; };
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
 
+  const held = (...codes) => codes.some((c) => down.has(c));
   return {
-    forward() { return (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0); },
-    strafe() { return (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0); },
-    run() { return keys.has('ShiftLeft') || keys.has('ShiftRight'); },
-    takeLook() { const dx = lookDX, dy = lookDY; lookDX = 0; lookDY = 0; return { dx, dy }; },
-    takeActions() { const taken = actions; actions = 0; return taken; },
+    forward() { return (held('KeyW', 'ArrowUp') ? 1 : 0) - (held('KeyS', 'ArrowDown') ? 1 : 0); },
+    strafe() { return (held('KeyD', 'ArrowRight') ? 1 : 0) - (held('KeyA', 'ArrowLeft') ? 1 : 0); },
+    run() { return held('ShiftLeft', 'ShiftRight'); },
+    takeLook() { const out = { dx: dragDX, dy: dragDY }; dragDX = 0; dragDY = 0; return out; },
+    takeActions() { const out = queued; queued = 0; return out; },
   };
 }
 
 // ---------------------------------------------------------------- audio ----
+// Everything is synthesized: a two-oscillator engine hum, a two-tone siren,
+// a looping bass line, and one-shot blips. Nothing is loaded from disk.
 export function createAudio() {
-  let ctx = null;
+  let ac = null;
   let muted = false;
-  let engineOsc = null, engineOsc2 = null, engineGain = null;
-  let sirenOsc = null, sirenGain = null, sirenPhase = 0;
-  let musicGain = null;
-  let musicTimer = 0;
-  let musicStep = 0;
-  const BASS = [55, 55, 65.41, 49, 55, 55, 65.41, 82.41]; // A A C G pattern, Hz
+  let eng = null, engSub = null, engBus = null;
+  let siren = null, sirenBus = null, sirenClock = 0;
+  let bassBus = null, bassClock = 0, bassStep = 0;
+  const BASS_LINE = [55, 55, 65.41, 49, 55, 55, 65.41, 82.41];
 
   function ensure() {
-    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return true; }
+    if (ac) { if (ac.state === 'suspended') ac.resume(); return true; }
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return false;
-      ctx = new AC();
-      engineGain = ctx.createGain(); engineGain.gain.value = 0; engineGain.connect(ctx.destination);
-      engineOsc = ctx.createOscillator(); engineOsc.type = 'sawtooth'; engineOsc.frequency.value = 50;
-      engineOsc2 = ctx.createOscillator(); engineOsc2.type = 'square'; engineOsc2.frequency.value = 100;
-      const eg2 = ctx.createGain(); eg2.gain.value = 0.4; eg2.connect(engineGain);
-      engineOsc.connect(engineGain); engineOsc2.connect(eg2);
-      engineOsc.start(); engineOsc2.start();
-      sirenGain = ctx.createGain(); sirenGain.gain.value = 0; sirenGain.connect(ctx.destination);
-      sirenOsc = ctx.createOscillator(); sirenOsc.type = 'sine'; sirenOsc.frequency.value = 750; sirenOsc.start(); sirenOsc.connect(sirenGain);
-      musicGain = ctx.createGain(); musicGain.gain.value = 0.05; musicGain.connect(ctx.destination);
+      ac = new AC();
+      engBus = ac.createGain(); engBus.gain.value = 0; engBus.connect(ac.destination);
+      eng = ac.createOscillator(); eng.type = 'sawtooth'; eng.frequency.value = 50;
+      engSub = ac.createOscillator(); engSub.type = 'square'; engSub.frequency.value = 100;
+      const subBus = ac.createGain(); subBus.gain.value = 0.4; subBus.connect(engBus);
+      eng.connect(engBus); engSub.connect(subBus);
+      eng.start(); engSub.start();
+      sirenBus = ac.createGain(); sirenBus.gain.value = 0; sirenBus.connect(ac.destination);
+      siren = ac.createOscillator(); siren.type = 'sine'; siren.frequency.value = 750;
+      siren.connect(sirenBus); siren.start();
+      bassBus = ac.createGain(); bassBus.gain.value = 0.05; bassBus.connect(ac.destination);
     } catch { return false; }
     return true;
   }
 
-  function tone(freq, dur, type, vol, when = 0) {
-    if (!ctx || muted) return;
-    const t = ctx.currentTime + when;
-    const o = ctx.createOscillator(); const g = ctx.createGain();
+  function note(freq, dur, type, vol, delay = 0) {
+    if (!ac || muted) return;
+    const t0 = ac.currentTime + delay;
+    const o = ac.createOscillator(), g = ac.createGain();
     o.type = type || 'sine'; o.frequency.value = freq;
-    g.gain.setValueAtTime(vol || 0.15, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(t); o.stop(t + dur + 0.02);
+    g.gain.setValueAtTime(vol || 0.15, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.connect(g); g.connect(ac.destination);
+    o.start(t0); o.stop(t0 + dur + 0.02);
   }
 
   return {
     unlock() { ensure(); },
-    setMuted(m) { muted = m; if (engineGain) engineGain.gain.value = 0; if (sirenGain) sirenGain.gain.value = 0; },
+    setMuted(m) { muted = m; if (engBus) engBus.gain.value = 0; if (sirenBus) sirenBus.gain.value = 0; },
     isMuted() { return muted; },
     update(dt, speed01, wanted) {
-      if (!ctx || muted) return;
-      if (engineOsc) {
-        engineOsc.frequency.value = 45 + speed01 * 130;
-        engineOsc2.frequency.value = 90 + speed01 * 260;
-        engineGain.gain.value = speed01 > 0.02 ? 0.05 + speed01 * 0.05 : 0.0;
+      if (!ac || muted) return;
+      if (eng) {
+        eng.frequency.value = 45 + speed01 * 130;
+        engSub.frequency.value = 90 + speed01 * 260;
+        engBus.gain.value = speed01 > 0.02 ? 0.05 + speed01 * 0.05 : 0;
       }
-      if (sirenOsc) {
-        sirenPhase += dt;
-        sirenOsc.frequency.value = (Math.floor(sirenPhase * 2) % 2 === 0) ? 720 : 980;
-        sirenGain.gain.value = wanted > 0 ? 0.035 : 0;
+      if (siren) {
+        sirenClock += dt;
+        siren.frequency.value = (Math.floor(sirenClock * 2) % 2 === 0) ? 720 : 980;
+        sirenBus.gain.value = wanted > 0 ? 0.035 : 0;
       }
-      musicTimer -= dt;
-      if (musicTimer <= 0) {
-        musicTimer = 0.42;
-        const f = BASS[musicStep % BASS.length]; musicStep += 1;
-        tone(f, 0.4, 'triangle', 0.12);
-        if (musicStep % 4 === 0) tone(f * 2, 0.2, 'sine', 0.05);
+      bassClock -= dt;
+      if (bassClock <= 0) {
+        bassClock = 0.42;
+        const f = BASS_LINE[bassStep % BASS_LINE.length]; bassStep += 1;
+        note(f, 0.4, 'triangle', 0.12);
+        if (bassStep % 4 === 0) note(f * 2, 0.2, 'sine', 0.05);
       }
     },
-    blip() { tone(880, 0.12, 'sine', 0.18); tone(1320, 0.14, 'sine', 0.12, 0.07); },
-    thud() { tone(120, 0.15, 'square', 0.2); tone(70, 0.2, 'sine', 0.22); },
-    crash() { tone(90, 0.25, 'sawtooth', 0.2); tone(55, 0.3, 'square', 0.15, 0.05); },
-    horn() { tone(233, 0.3, 'square', 0.12); tone(294, 0.3, 'square', 0.1); },
-    jingle() { [523, 659, 784, 1047].forEach((f, i) => tone(f, 0.22, 'triangle', 0.18, i * 0.09)); },
-    busted() { [392, 330, 262, 196].forEach((f, i) => tone(f, 0.3, 'sawtooth', 0.12, i * 0.13)); },
+    blip() { note(880, 0.12, 'sine', 0.18); note(1320, 0.14, 'sine', 0.12, 0.07); },
+    thud() { note(120, 0.15, 'square', 0.2); note(70, 0.2, 'sine', 0.22); },
+    crash() { note(90, 0.25, 'sawtooth', 0.2); note(55, 0.3, 'square', 0.15, 0.05); },
+    horn() { note(233, 0.3, 'square', 0.12); note(294, 0.3, 'square', 0.1); },
+    jingle() { [523, 659, 784, 1047].forEach((f, i) => note(f, 0.22, 'triangle', 0.18, i * 0.09)); },
+    busted() { [392, 330, 262, 196].forEach((f, i) => note(f, 0.3, 'sawtooth', 0.12, i * 0.13)); },
   };
 }
 
