@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VICE SHORES — Sun, Sand &amp; Stolen Cars</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1420; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #hud { position: fixed; inset: 0; pointer-events: none; color: #fff; }
+  .panel { background: rgba(8, 12, 22, 0.62); border: 1px solid rgba(255,255,255,0.18); border-radius: 10px; padding: 8px 12px; backdrop-filter: blur(2px); }
+  #topleft { position: absolute; top: 12px; left: 12px; min-width: 210px; }
+  #cash { font-size: 24px; font-weight: 800; color: #7dff9b; letter-spacing: 0.5px; }
+  #stars { font-size: 20px; letter-spacing: 3px; color: #ffd23e; min-height: 24px; }
+  #stars .off { color: rgba(255,255,255,0.25); }
+  #healthbar { width: 100%; height: 10px; background: rgba(255,255,255,0.2); border-radius: 5px; margin-top: 6px; overflow: hidden; }
+  #healthFill { height: 100%; width: 100%; background: linear-gradient(90deg, #37d67a, #a5e34d); }
+  #topright { position: absolute; top: 12px; right: 12px; text-align: right; }
+  #minimap { width: 180px; height: 180px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.25); background: #0a0f1c; display: block; }
+  #clock { margin-top: 6px; font-size: 13px; color: #dfe7ff; }
+  #mission { position: absolute; left: 12px; bottom: 12px; max-width: 360px; }
+  #missionTitle { font-size: 15px; font-weight: 800; color: #ffd23e; }
+  #missionText { font-size: 14px; color: #eef2ff; margin-top: 2px; }
+  #missionDist { font-size: 13px; color: #9fd8ff; margin-top: 2px; }
+  #speed { position: absolute; right: 14px; bottom: 14px; font-size: 26px; font-weight: 800; color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,0.6); }
+  #speed small { font-size: 12px; font-weight: 600; color: #cfe0ff; }
+  #toast { position: absolute; left: 50%; top: 18%; transform: translateX(-50%); font-size: 22px; font-weight: 800; color: #fff; text-shadow: 0 2px 10px rgba(0,0,0,0.7); opacity: 0; transition: opacity 0.25s; text-align: center; }
+  #hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); font-size: 12px; color: rgba(255,255,255,0.75); }
+  .screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(5, 8, 16, 0.55); pointer-events: auto; }
+  .card { width: min(560px, 92vw); background: rgba(10, 16, 30, 0.92); border: 1px solid rgba(255,255,255,0.2); border-radius: 16px; padding: 28px 30px; color: #fff; text-align: center; }
+  .card h1 { margin: 0 0 4px; font-size: 44px; letter-spacing: 2px; color: #ffd23e; }
+  .card h2 { margin: 0 0 10px; font-size: 26px; }
+  .card p { color: #cdd8f2; font-size: 15px; line-height: 1.5; }
+  .card .sub { color: #ffb199; font-weight: 700; letter-spacing: 1px; }
+  .btn { display: inline-block; margin: 8px 6px 0; padding: 12px 26px; font-size: 16px; font-weight: 800; color: #101828; background: #ffd23e; border: none; border-radius: 10px; cursor: pointer; }
+  .btn.ghost { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,0.5); }
+  .keys { text-align: left; font-size: 13px; color: #b9c6e8; line-height: 1.7; margin: 12px auto 0; display: inline-block; }
+  .keys b { color: #fff; background: rgba(255,255,255,0.12); border-radius: 4px; padding: 1px 7px; margin-right: 4px; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Vice Shores: an open-world crime game. Drive, walk, take on missions and lose the cops."></canvas>
+<div id="hud">
+  <div id="topleft" class="panel">
+    <div id="cash">$0</div>
+    <div id="stars"><span class="off">★ ★ ★</span></div>
+    <div id="healthbar"><div id="healthFill"></div></div>
+  </div>
+  <div id="topright">
+    <canvas id="minimap" width="360" height="360"></canvas>
+    <div id="clock" class="panel">VICE SHORES &middot; 18:20</div>
+  </div>
+  <div id="mission" class="panel">
+    <div id="missionTitle">VICE SHORES</div>
+    <div id="missionText">Press Enter to start the story.</div>
+    <div id="missionDist"></div>
+  </div>
+  <div id="speed"></div>
+  <div id="toast"></div>
+  <div id="hint">WASD move &middot; E enter / steal car &middot; F punch &middot; H horn &middot; Space jump &middot; M mute &middot; P pause &middot; drag mouse to look</div>
+</div>
+
+<div id="titleScreen" class="screen">
+  <div class="card">
+    <h1>VICE SHORES</h1>
+    <div class="sub">SUN &middot; SAND &amp; STOLEN CARS</div>
+    <p>You are <b>Jax</b>, new in town with empty pockets and a phone full of Rico's
+    "easy jobs". Steal a ride, run the packages, dodge the Vice Shores PD — and
+    don't get caught. Six story missions, one very hot sunset.</p>
+    <button id="newBtn" class="btn">NEW GAME</button>
+    <button id="continueBtn" class="btn ghost">CONTINUE</button>
+    <div class="keys">
+      <div><b>W A S D</b> walk / drive &nbsp; <b>Mouse drag</b> look around</div>
+      <div><b>E</b> enter or steal a car &nbsp; <b>F</b> punch &nbsp; <b>Space</b> jump</div>
+      <div><b>H</b> horn &nbsp; <b>Shift</b> run &nbsp; <b>M</b> mute &nbsp; <b>P</b> pause</div>
+    </div>
+    <p style="font-size:12px;color:#8fa0c8">An original game. No Rockstar names, maps or assets. Runs offline.</p>
+  </div>
+</div>
+
+<div id="pauseScreen" class="screen hidden">
+  <div class="card">
+    <h2>Paused</h2>
+    <p>The city waits for you.</p>
+    <button id="resumeBtn" class="btn">RESUME</button>
+    <button id="restartBtn" class="btn ghost">RESTART STORY</button>
+    <button id="quitBtn" class="btn ghost">QUIT TO TITLE</button>
+  </div>
+</div>
+
+<div id="overScreen" class="screen hidden">
+  <div class="card">
+    <h2 id="overTitle">BUSTED</h2>
+    <p id="overStats"></p>
+    <button id="againBtn" class="btn">PLAY AGAIN</button>
+    <button id="overTitleBtn" class="btn ghost">TITLE SCREEN</button>
+  </div>
+</div>
+
+<div id="doneScreen" class="screen hidden">
+  <div class="card">
+    <h2 id="doneTitle">MISSION COMPLETE</h2>
+    <p id="doneText"></p>
+    <button id="doneBtn" class="btn">KEEP PLAYING</button>
+  </div>
+</div>
+
+<p id="status" role="status" aria-live="polite"></p>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
